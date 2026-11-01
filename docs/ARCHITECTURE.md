@@ -49,6 +49,14 @@ never imports a module. A module imports `common/` and `features/`. The API impo
 modules only by name, dynamically. That is what makes modules independently
 installable and independently testable.
 
+One caveat, stated rather than hidden: `common/` and `features/` form a package-level
+cycle. `common.training` and `common.tabular` import from `features`, while
+`features.__init__`, `physics` and `timeseries` import the leaf modules
+`common.errors`, `common.logging` and `common.paths`. It is benign - the return edges
+target leaf utilities that import nothing from `features` - and Python resolves it
+because the imports are lazy at call time. But it is a cycle, not a clean DAG, and a
+future refactor that moves `errors`/`logging`/`paths` into `features` would break it.
+
 ---
 
 ## The predictor contract
@@ -190,7 +198,7 @@ carrying `code`, `message`, `http_status` and `context`:
 
 | Error | HTTP | When |
 |---|---|---|
-| `ConfigError` | 500 | config missing or invalid |
+| `ConfigError` | 503 | config missing or invalid (e.g. no API key - availability, not a bug) |
 | `DataValidationError` | 422 | input fails schema |
 | `ModelNotTrainedError` | 503 | no registered artefact |
 | `ArtifactError` | 500 | artefact corrupt or digest mismatch |
