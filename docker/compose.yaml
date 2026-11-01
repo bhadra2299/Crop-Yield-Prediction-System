@@ -1,0 +1,103 @@
+# docker/compose.yaml - local and staging orchestration for the agri platform.
+#
+# Run everything from the repository root (relative paths below resolve against
+# this file's directory, i.e. docker/):
+#
+#   docker compose --file docker/compose.yaml up --build --detach      # api
+#   docker compose --file docker/compose.yaml --profile train run --rm train
+#   docker compose --file docker/compose.yaml logs --follow api
+#   docker compose --file docker/compose.yaml down
+#
+# Volumes (named, survive "down", removed only by "down --volumes"):
+#   agri_models_registry -> /app/models/registry   trained bundles + LATEST pointers
+#   agri_reports         -> /app/reports           metrics JSON + figures written by training/eval
+#   ../data/raw          -> /app/data/raw (READ-ONLY)  the raw datasets, never mutated by a container
+#
+# Secrets are NOT in this file. They are injected at run time:
+#   * an optional ../.env (Compose >= 2.24 syntax, ignored when absent), and/or
+#   * an explicit --env-file / orchestrator secret store.
+# Nothing here is baked into an image layer.
+
+name: agri
+
+services:
+  # ---------------------------------------------------------------------------
+  # api - the FastAPI service. Starts and reports degraded health even when the
+  #       model registry volume is completely empty (this is asserted in CI).
+  # ---------------------------------------------------------------------------
+  api:
+    image: agri-platform:local
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      # "production" is an alias of the slim runtime stage; explicitly spelled
+      # out so a bare build can never pick up the torch-heavy "vision" stage.
+      target: production
+    container_name: agri-api
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      AGRI_ENV: production
+      AGRI_LOG_JSON: "true"
+      # Absolute paths: the container must not depend on the working directory.
+      AGRI_PROJECT_ROOT: /app
+      AGRI_CONFIG_DIR: /app/configs
+      AGRI_MODEL_REGISTRY: /app/models/registry
+      AGRI_API_HOST: 0.0.0.0
+      AGRI_API_PORT: "8000"
+      # false -> boot even if a module has no artefact; /v1/health then reports
+      # degraded (HTTP 503) instead of the process dying.
+      AGRI_STRICT_MODELS: "false"
+    ports:
+      - "8000:8000"
+    volumes:
+      - models_registry:/app/models/registry
+      - reports:/app/reports
+      - ../data/raw:/app/data/raw:ro
+    # Inherits the image HEALTHCHECK (200 or 503 both count as alive).
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # train - one-shot training run. Not started by "up": it lives behind the
+  #         "train" profile. Writes bundles into the shared registry volume.
+  # ---------------------------------------------------------------------------
+  train:
+    image: agri-platform:local
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: production
+    container_name: agri-train
+    profiles: ["train"]
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      AGRI_ENV: production
+      AGRI_LOG_JSON: "true"
+      AGRI_PROJECT_ROOT: /app
+      AGRI_CONFIG_DIR: /app/configs
+      AGRI_MODEL_REGISTRY: /app/models/registry
+    # Uses the console entry point declared in pyproject.toml (agri = "agri.cli:main"),
+    # which the image puts on PATH at /opt/venv/bin. Equivalent to "make train-all",
+    # except that "python -m agri.cli train --all" cannot work: agri/cli/ has no
+    # __main__.py, so CPython refuses the package ("cannot be directly executed").
+    command: ["agri", "train", "--all"]
+    volumes:
+      - models_registry:/app/models/registry
+      - reports:/app/reports
+      - ../data/raw:/app/data/raw:ro
+    # A training run must not be resurrected by the restart policy.
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  models_registry:
+    name: agri_models_registry
+  reports:
+    name: agri_reports

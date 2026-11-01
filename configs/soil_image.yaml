@@ -1,0 +1,59 @@
+name: soil_image
+version: "1.0.0"
+task: classification
+description: Classify soil type from an uploaded photograph (10 soil classes).
+owner: data-science
+seed: 42
+
+data:
+  raw: data/raw/soil_images
+  target: label
+  features: []
+  drop: []
+  required_columns: []
+  allow_missing: []
+  max_missing_fraction: 0.0
+  min_rows: 100
+  image_size: [224, 224]
+  classes: [alluvial_soil, black_soil, chalky_soil, clay_soil, laterite_soil,
+            loamy_soil, peat_soil, red_soil, sandy_soil, silt_soil]
+
+split:
+  strategy: stratified
+  test_size: 0.1
+  val_size: 0.1
+  n_splits: 3
+
+model:
+  family: torch
+  algorithm: MobileNetV2
+  params:
+    epochs: 6
+    batch_size: 32
+    learning_rate: 0.001
+    weight_decay: 0.0001
+    freeze_backbone_epochs: 2
+    num_classes: 10
+  calibrate: false
+  feature_importance: false
+  uncertainty: none
+  target_transform: none
+
+gates:
+  # The bundled images are procedurally generated, so this floor measures
+  # separability of synthetic textures, NOT field performance. It is recorded as
+  # synthetic-only in the manifest and must be re-measured on real photographs
+  # before any accuracy claim reaches a user.
+  primary_metric: macro_f1
+  minimum: 0.85
+  secondary_metrics: [accuracy]
+  must_beat_baseline: true
+  baseline: majority_class
+
+serving:
+  latency_budget_ms: 5000
+  confidence_high: 0.75
+  confidence_medium: 0.50
+  cacheable: false
+  warmup: true
+  allow_fallback: false

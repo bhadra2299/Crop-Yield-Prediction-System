@@ -1,0 +1,48 @@
+name: disease
+version: "1.0.0"
+task: inference
+description: Detect plant leaf disease from a photograph using a pretrained model.
+owner: data-science
+seed: 42
+
+data:
+  raw: data/raw/soil_images
+  target: null
+  features: []
+  drop: []
+  required_columns: []
+  allow_missing: []
+  max_missing_fraction: 1.0
+  min_rows: 1
+  image_size: [224, 224]
+  classes: []
+
+split:
+  strategy: none
+
+model:
+  # Inference only: no training, no artefact in this repository. The third-party
+  # weights are fetched once and cached; they are not validated on regional
+  # varieties, so every response says so.
+  family: external
+  algorithm: MobileNetV2PlantVillage
+  params:
+    model_id: "linkanjarad/mobilenet_v2_1.0_224-plant-disease-identification"
+    tta_crops: 3
+    tta_flips: true
+    low_confidence_threshold: 0.50
+    cache_dir: data/external/model_cache
+  calibrate: false
+  uncertainty: none
+
+gates:
+  primary_metric: inference_available
+  must_beat_baseline: false
+
+serving:
+  latency_budget_ms: 5000
+  confidence_high: 0.70
+  confidence_medium: 0.45
+  cacheable: false
+  warmup: false
+  allow_fallback: true

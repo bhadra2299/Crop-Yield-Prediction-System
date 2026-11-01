@@ -1,0 +1,92 @@
+name: market_price
+version: "1.0.0"
+task: forecasting
+description: Forecast mandi modal price change relative to the latest known price.
+owner: data-science
+seed: 42
+
+data:
+  raw: data/raw/market_price/market_mandi.csv
+  target: modal_price
+  features: [commodity_name, state]
+  drop: [min_price, max_price]
+  id_columns: [district, market]
+  time_column: date
+  required_columns: [commodity_name, state, district, market, min_price, max_price, modal_price, date]
+  allow_missing: []
+  max_missing_fraction: 0.0
+  min_rows: 1000
+  group_column: commodity_name
+
+# Time series are never randomly split. The evaluator uses rolling-origin
+# expanding windows, and this strategy marker keeps that explicit.
+split:
+  strategy: none
+  time_column: date
+
+model:
+  family: statsmodels
+  # A log-linear trend fitted on a recent window, with the trend damped as the
+  # horizon extends. "Naive" in the name refers to the naive last-value baseline it
+  # is measured against, not to the fitted form.
+  #
+  # Windowing and damping are measured choices, not defaults: see
+  # docs/MODULES/market_price.md and scripts/_experiment_market.py. Fitting the trend
+  # on the whole 7-month record measured WORSE than repeating the last price at every
+  # horizon; restricting to 60 days and damping at 0.3 beats it by ~31% at h7.
+  algorithm: SeasonalNaiveWithTrend
+  params:
+    rolling_windows: 3
+    horizons: [1, 7, 30]
+    min_history_points: 60
+    seasonal_period: 12
+    trend_window_days: 60
+    trend_damping: 0.3
+    weekday_effects: true
+    # Selection floor, not a gate: the trend model is served only if it beats the naive
+    # baseline on at least this share of backtested series. It measures 0.13, so the
+    # naive baseline is served instead.
+    selection_beat_fraction: 0.60
+    # Annual seasonality is deliberately OFF. The source has a 426-day gap with no
+    # observations, so a yearly cycle is not estimable. See detect_source_gap().
+    annual_seasonality: false
+  calibrate: false
+  feature_importance: false
+  uncertainty: quantile
+  target_transform: log1p
+
+gates:
+  # The hard bar is TYPICAL error, not mean error and not a lift against an unstable
+  # denominator. Two measured reasons:
+  #
+  # 1. The shipped forecaster is decided by the backtest, and the backtest said the
+  #    trend model loses. It beat naive on only 13% of series at h7 (median APE 33.4%
+  #    against 20.0%). See docs/MODULES/market_price.md.
+  # 2. The pooled MEAN is dominated by a handful of series whose MAPE exceeds 100%.
+  #    Changing the series set from 45 to 120 moved the pooled mean baseline from 67%
+  #    to 47% and swung the lift from +31% to 0%. A metric that unstable is not a gate;
+  #    the median of per-series APE does not have that failure mode.
+  #
+  # 25.0 is the measured naive median APE at h7 (20.0%) plus headroom. The gate's real
+  # job is to refuse a forecaster materially worse than doing nothing, which is exactly
+  # the regression that shipped once and was caught here.
+  primary_metric: median_ape
+  maximum: 25.0
+  # Informational only - reported so the tail behaviour and the baseline comparison stay
+  # visible in the manifest. None of these are floors.
+  secondary_metrics: [mape, baseline_mape, beat_fraction, relative_lift_over_baseline]
+  # beat_fraction is a SELECTION floor (under model.params below), not a gate floor:
+  # train.py serves the trend model only when it clears that share of series, and
+  # otherwise serves the naive baseline. Keeping it out of the gate is deliberate - with
+  # the baseline shipped, "share of series where the model beats the baseline" is 0 by
+  # construction, so gating on it would be gating on a tautology.
+  must_beat_baseline: false
+  baseline: last_value
+
+serving:
+  latency_budget_ms: 400
+  confidence_high: 0.80
+  confidence_medium: 0.60
+  cacheable: true
+  warmup: true
+  allow_fallback: true

@@ -1,0 +1,77 @@
+# docker/.dockerignore
+#
+# !!! THIS FILE IS A TEMPLATE - IT HAS NO EFFECT WHERE IT SITS !!!
+#
+# The Docker daemon always reads the ignore file from the BUILD CONTEXT ROOT.
+# The agri build uses the repository root as context:
+#
+#     docker build --file docker/Dockerfile --target production -t agri-platform:latest .
+#
+# so the daemon looks for <repo-root>/.dockerignore and never sees this file.
+# Creating <repo-root>/.dockerignore was outside this change-set's write scope
+# (docker/ + .github/ only). The same content is therefore:
+#   * reproduced verbatim in the header comment of docker/Dockerfile,
+#   * kept ready-to-paste in .github/DOCKERIGNORE.md,
+#   * documented in docker/README.md.
+#
+# ACTION REQUIRED (repo owner): copy this file to <repo-root>/.dockerignore.
+# Until then builds are CORRECT but slower (the whole working tree, including
+# data/raw imagery and .venv, is sent to the daemon).
+#
+# docker/Dockerfile only uses explicit, narrow COPY statements, so no ignored
+# path above can leak into an image layer regardless of this file.
+
+# --- vcs / ci / tooling ------------------------------------------------------
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+
+# --- python virtualenvs & caches --------------------------------------------
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage*.xml
+htmlcov/
+.ipynb_checkpoints/
+
+# --- data, models, reports: mounted at run time, never baked -----------------
+data/
+models/
+reports/
+mlruns/
+mlartifacts/
+
+# --- docs / dev-only trees (not needed to build or run the image) -----------
+docs/
+notebooks/
+scripts/
+tests/
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- secrets: never send them to the daemon ---------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- os / editor noise ------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp

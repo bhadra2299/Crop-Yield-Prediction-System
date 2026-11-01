@@ -1,0 +1,412 @@
+# =============================================================================
+# CI - lint, types, tests, container smoke test, metric-floor gate.
+#
+# Triggers on every push and pull request targeting main. Every job is a hard
+# gate: no step suppresses its own failure, and nothing is allowed to "warn only"
+# where the contract is a merge blocker.
+#
+# Python is pinned to 3.13 (matches the container image; pyproject allows
+# >=3.11, so 3.13 is a supported interpreter).
+# =============================================================================
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # lint - ruff lint + formatting. Hard gate.
+  #
+  # NOTE (repo state measured 2026-10-28): src/ carries 105 pre-existing ruff
+  # violations and 38 files would be reformatted, so this job is RED until src/
+  # is cleaned. Run locally:
+  #     python -m ruff check --fix src && python -m ruff format src
+  # Most are mechanical (F401 unused imports, RUF046, I001 import order, W292,
+  # UP017/UP042). The rest need a human.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: ruff check
+        run: |
+          # tests/ does not exist yet in some checkouts; lint what is present.
+          targets="src"
+          if [ -d tests ]; then targets="src tests"; fi
+          echo "ruff check $targets"
+          python -m ruff check $targets
+
+      - name: ruff format --check
+        run: |
+          targets="src"
+          if [ -d tests ]; then targets="src tests"; fi
+          echo "ruff format --check $targets"
+          python -m ruff format --check $targets
+
+  # ---------------------------------------------------------------------------
+  # types - mypy as an ERROR-COUNT RATCHET.
+  #
+  # mypy is not clean yet (69 errors measured 2026-10-28, all pre-existing in
+  # src/agri). The step deliberately does NOT suppress its own failure: instead it
+  # fails only when the error count EXCEEDS .github/mypy-baseline.txt, so no new
+  # type error can merge while the existing debt is paid down incrementally.
+  # mypy is pinned below: the ratchet counts diagnostics, so a tool upgrade that
+  # changes the count must be a deliberate commit that also updates the baseline.
+  # --no-error-summary is passed so the count is derived deterministically from
+  # per-diagnostic lines rather than from mypy's human-readable summary.
+  #
+  # Lowering the baseline after a cleanup is a deliberate one-line commit.
+  # ---------------------------------------------------------------------------
+  types:
+    name: types (mypy ratchet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project with dev extras (mypy pinned for a deterministic ratchet)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install "mypy==2.4.0"
+
+      - name: mypy (fail only on NEW errors vs baseline)
+        shell: bash
+        run: |
+          # Not "set -e": mypy exits non-zero while the known debt is present,
+          # and that exit code is handled explicitly below.
+          set +e
+
+          baseline_file=".github/mypy-baseline.txt"
+          if [ ! -f "$baseline_file" ]; then
+            echo "::error title=missing baseline::$baseline_file is required by the mypy ratchet."
+            exit 1
+          fi
+          baseline=$(grep -m1 -E '^[0-9]+$' "$baseline_file")
+          if [ -z "$baseline" ]; then
+            echo "::error title=bad baseline::No integer found in $baseline_file."
+            exit 1
+          fi
+
+          python -m mypy src/agri --no-error-summary 2>&1 | tee mypy.log
+          mypy_rc=${PIPESTATUS[0]}
+
+          # Count diagnostics only ("path:line: error: ..."), never notes.
+          errors=$(grep -cE ':[0-9]+: error: ' mypy.log)
+          errors=${errors:-0}
+
+          echo "mypy diagnostics: $errors (baseline: $baseline, mypy exit: $mypy_rc)"
+
+          if [ "$errors" -gt "$baseline" ]; then
+            echo "::error title=mypy regression::$errors errors exceed the baseline of $baseline. Fix the new errors, or raise $baseline_file in the same PR with a justification."
+            exit 1
+          fi
+
+          if [ "$errors" -lt "$baseline" ]; then
+            echo "::warning title=mypy improved::Only $errors errors vs baseline $baseline. Lower $baseline_file to lock the gain in."
+          fi
+
+          if [ "$errors" -gt 0 ]; then
+            echo "::warning title=mypy debt::$errors pre-existing errors are within the accepted baseline (not introduced by this change)."
+          else
+            echo "mypy is clean."
+          fi
+
+      - name: Upload mypy log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mypy-log
+          path: mypy.log
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # test - pytest split by marker: unit / integration / regression.
+  #
+  # PYTHONPATH=src makes the src/ layout importable even without an install;
+  # the editable install below also supplies pytest-cov.
+  #
+  # tests/ currently carries unit + integration suites; no test uses the
+  # "regression" marker yet, so that leg reports "no tests collected" (exit 5)
+  # as a warning until regression tests land. The same applies if tests/ is
+  # absent altogether. A genuine pytest failure is always a hard failure.
+  # ---------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.marker }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        marker: [unit, integration, regression]
+    env:
+      PYTHONPATH: src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: pytest -m ${{ matrix.marker }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -d tests ]; then
+            echo "::warning title=tests/ missing::No tests/ directory in this checkout - marker '${{ matrix.marker }}' had nothing to run. This leg becomes a hard gate once tests land."
+            exit 0
+          fi
+
+          mkdir -p reports
+          python -m pytest -m "${{ matrix.marker }}" \
+            --cov=agri \
+            --cov-report=xml:"coverage-${{ matrix.marker }}.xml" \
+            --cov-report=term-missing \
+            --junitxml="reports/pytest-${{ matrix.marker }}.xml"
+          rc=$?
+
+          if [ "$rc" -eq 5 ]; then
+            echo "::warning title=no tests collected::pytest collected no tests for marker '${{ matrix.marker }}'."
+            exit 0
+          fi
+          exit "$rc"
+
+      - name: Upload coverage report (${{ matrix.marker }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.marker }}
+          path: coverage-${{ matrix.marker }}.xml
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # docker - build the production image and prove it SERVES WITHOUT MODELS.
+  #
+  # No volume is mounted, so /app/models/registry is the empty directory baked
+  # into the image. The container must stay up and answer /v1/health with
+  # 200 (healthy) or 503 (degraded) - 503 is a valid, alive state, not a crash.
+  # Nothing is pushed.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: docker (build + boot without models)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build production image
+        run: |
+          docker build \
+            --file docker/Dockerfile \
+            --target production \
+            --tag agri-platform:ci \
+            .
+
+      - name: Boot container without a model registry and probe /v1/health
+        shell: bash
+        run: |
+          docker rm --force agri-ci >/dev/null 2>&1 || true
+
+          # The whole point: NO -v flags, so the registry is empty.
+          docker run --detach \
+            --name agri-ci \
+            --publish 127.0.0.1:8000:8000 \
+            --env AGRI_ENV=production \
+            --env AGRI_LOG_JSON=true \
+            --env AGRI_STRICT_MODELS=false \
+            agri-platform:ci
+
+          cleanup() { docker rm --force agri-ci >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          probe() {
+            python3 - <<'PY'
+          import sys, urllib.request, urllib.error
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:8000/v1/health", timeout=2) as response:
+                  print(response.status)
+          except urllib.error.HTTPError as exc:      # 503 lands here and is expected
+              print(exc.code)
+          except Exception:                          # refused / not up yet
+              print("")
+          PY
+          }
+
+          result=""
+          last_code=""
+          for attempt in $(seq 1 60); do
+            code="$(probe)"
+            last_code="$code"
+            if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+              echo "/v1/health answered $code after ${attempt}s -> alive (503 = degraded, acceptable)."
+              if [ "$code" = "503" ]; then
+                echo "Registry was empty and the service reported degraded instead of dying - as required."
+              fi
+              result="ok"
+              break
+            fi
+
+            if ! docker inspect --format '{{.State.Running}}' agri-ci 2>/dev/null | grep -q true; then
+              echo "::error title=container exited::The container died before /v1/health became reachable - it must not crash on an empty model registry."
+              docker logs agri-ci || true
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          if [ "$result" != "ok" ]; then
+            if [ -z "$last_code" ]; then last_code="no response"; fi
+            echo "::error title=health probe failed::/v1/health never returned 200 or 503 within 60s (last observed: $last_code). 503 is acceptable (degraded but alive); 500 or a dead port is not."
+            docker logs agri-ci || true
+            docker inspect --format '{{json .State}}' agri-ci || true
+            exit 1
+          fi
+
+          echo "Container logs:"
+          docker logs agri-ci || true
+
+  # ---------------------------------------------------------------------------
+  # metric-floors - THE GATE THAT STOPS A METRIC REGRESSION FROM MERGING.
+  #
+  # Per-module evaluators write reports/metrics/<module>_<version>.json and exit
+  # non-zero when a configured floor (configs/*.yaml -> gates.minimum) is missed.
+  # This job runs the aggregate form and fails on ANY non-zero exit.
+  #
+  # HOW THIS GATE IS INVOKED - reconciled against src/agri/cli/__init__.py:
+  # the CLI now exists and states its own contract ("That contract is what makes
+  # 'agri evaluate --all' usable as a CI step that fails a merge when a published
+  # metric regresses"). pyproject declares the console entry point
+  #     agri = "agri.cli:main"
+  # and "pip install -e ." above puts it on PATH, so this job calls the SHIPPED
+  # entry point rather than a module path.
+  #
+  # Why not "python -m agri.cli evaluate --all": agri/cli is a package with no
+  # __main__.py, and CPython refuses it outright --
+  #     No module named agri.cli.__main__; 'agri.cli' is a package and cannot be
+  #     directly executed
+  # which would turn this gate red for a packaging reason instead of a metric one.
+  # "evaluate" does accept --all (argparse: evaluate.add_argument("--all")), and
+  # cmd_evaluate returns 1 if any module fails its floor, so a non-zero exit is
+  # precisely the regression signal required.
+  #
+  # ARTEFACT DEPENDENCY - read before "fixing" a red run here:
+  # cmd_evaluate --all only evaluates modules that already have a registered
+  # artefact, and exits 1 with "No module has a registered artefact" when none
+  # exists. models/registry/ and data/raw/ are gitignored, so a bare GitHub
+  # checkout has neither; the preflight below fails with that diagnosis instead
+  # of a confusing one. Provision them (dvc pull, restored cache, release
+  # artefact) for this gate to be meaningful.
+  # ---------------------------------------------------------------------------
+  metric-floors:
+    name: metric-floors (evaluate --all)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Preflight - artefact and data availability
+        shell: bash
+        run: |
+          set +e
+          missing=0
+
+          registry_empty=1
+          if [ -d models/registry ]; then
+            if [ -n "$(ls -A models/registry 2>/dev/null | grep -v '^\.gitkeep$')" ]; then
+              registry_empty=0
+            fi
+          fi
+          if [ "$registry_empty" -eq 1 ]; then
+            echo "::error title=models/registry is empty::The metric gate evaluates REGISTERED artefacts and models/registry/ is gitignored, so a fresh checkout has none. Provision them before this job (dvc pull / restored cache / release artefact), or run 'agri train --all' first once data is available."
+            missing=1
+          fi
+
+          data_empty=1
+          if [ -d data/raw ]; then
+            if [ -n "$(ls -A data/raw 2>/dev/null | grep -v -e '^\.gitkeep$' -e '^manifest\.json$')" ]; then
+              data_empty=0
+            fi
+          fi
+          if [ "$data_empty" -eq 1 ]; then
+            echo "::error title=data/raw is empty::Raw datasets are gitignored (DVC-tracked) and re-evaluation needs them. Provision them before this job."
+            missing=1
+          fi
+
+          exit "$missing"
+
+      - name: Evaluate every module and enforce metric floors
+        run: |
+          # Hard gate: a non-zero exit means a floor was missed (or the evaluator
+          # could not run). Both must block the merge.
+          agri evaluate --all
+
+      - name: Upload metric reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metric-reports
+          path: reports/metrics/
+          if-no-files-found: warn

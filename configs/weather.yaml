@@ -1,0 +1,43 @@
+name: weather
+version: "1.0.0"
+task: physics
+description: Weather ingestion (NASA POWER history, OpenWeather forecast) with disk caching.
+owner: data-science
+seed: 42
+
+data:
+  raw: data/raw/weather
+  target: null
+  features: [temperature, humidity, wind_speed, solar_radiation, pressure, rainfall]
+  drop: []
+  required_columns: []
+  allow_missing: []
+  max_missing_fraction: 0.0
+  min_rows: 1
+
+split:
+  strategy: none
+
+model:
+  family: external
+  algorithm: WeatherProvider
+  params:
+    forecast_days: 7
+    history_days: 30
+    cache_ttl_hours: 6
+    openweather_base_url: "https://api.openweathermap.org/data/2.5"
+    nasa_power_base_url: "https://power.larc.nasa.gov/api/temporal/daily/point"
+  calibrate: false
+  uncertainty: none
+
+gates:
+  primary_metric: provider_reachable
+  must_beat_baseline: false
+
+serving:
+  latency_budget_ms: 2000
+  confidence_high: 0.80
+  confidence_medium: 0.60
+  cacheable: true
+  warmup: false
+  allow_fallback: false

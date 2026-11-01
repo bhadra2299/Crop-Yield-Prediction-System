@@ -1,0 +1,52 @@
+name: irrigation
+version: "1.0.0"
+task: physics
+description: FAO-56 soil water balance irrigation scheduling with forecast-aware depth.
+owner: data-science
+seed: 42
+
+data:
+  raw: data/raw/irrigation/irrigation_scheduling.csv
+  target: pump
+  features: [moisture, temp]
+  drop: []
+  required_columns: [crop, moisture, temp, pump]
+  allow_missing: []
+  max_missing_fraction: 0.0
+  min_rows: 50
+
+split:
+  strategy: none
+
+model:
+  family: physics
+  algorithm: FAO56WaterBalance
+  params:
+    depletion_fraction_p: 0.55
+    root_depth_m: 0.6
+    field_capacity: 0.32
+    wilting_point: 0.14
+    initial_depletion_mm: 0.0
+    effective_rain_fraction: 0.8
+    max_application_mm: 40.0
+  calibrate: false
+  feature_importance: false
+  uncertainty: conformal
+  target_transform: none
+
+gates:
+  # There is no public ground truth for "correct irrigation" at a given field,
+  # so the gate is physical consistency, not an accuracy percentage. The module
+  # publishes no accuracy claim until a real sensor series supports one.
+  primary_metric: water_balance_error_mm
+  maximum: 0.5
+  secondary_metrics: [et0_reference_error_pct, ks_in_range]
+  must_beat_baseline: false
+
+serving:
+  latency_budget_ms: 500
+  confidence_high: 0.80
+  confidence_medium: 0.60
+  cacheable: false
+  warmup: true
+  allow_fallback: false

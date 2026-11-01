@@ -1,0 +1,62 @@
+name: risk
+version: "1.0.0"
+task: classification
+description: Composite risk band from yield, rainfall, price and disease signals.
+owner: data-science
+seed: 42
+
+data:
+  raw: data/raw/yield/crop_yield.csv
+  target: risk_band
+  features: [Crop, Season, State, Crop_Year, Area, Annual_Rainfall, Fertilizer, Pesticide,
+             fertilizer_per_hectare, pesticide_per_hectare]
+  drop: [Production]
+  required_columns: [Crop, Crop_Year, Season, State, Area, Annual_Rainfall, Fertilizer, Pesticide, Yield]
+  allow_missing: []
+  max_missing_fraction: 0.0
+  min_rows: 5000
+  classes: [Low, Medium, High]
+
+split:
+  strategy: stratified
+  test_size: 0.2
+  shuffle: true
+
+model:
+  family: sklearn
+  algorithm: RandomForest
+  params:
+    n_estimators: 300
+    max_depth: 10
+    class_weight: balanced
+    n_jobs: -1
+  calibrate: true
+  calibration_method: sigmoid
+  feature_importance: true
+  uncertainty: none
+  target_transform: none
+
+gates:
+  # A missed High-risk field is the expensive error, so recall on High is the
+  # primary metric rather than accuracy or macro-F1.
+  #
+  # The floor is 0.50 against a 0.33 chance rate for three classes. It is set
+  # there because measurement, not preference, put it there: with Yield excluded
+  # (it defines the label, so including it would be leakage) and only pre-harvest
+  # conditions available, recall on the bottom yield quartile measures ~0.58.
+  # A 0.70 floor was the original intent and the data does not support it. When
+  # real field records with per-plot inputs arrive, this floor should rise with
+  # them. See docs/MODULES/risk.md for the full limitation statement.
+  primary_metric: recall_high_risk
+  minimum: 0.50
+  secondary_metrics: [macro_f1, accuracy]
+  must_beat_baseline: true
+  baseline: majority_class
+
+serving:
+  latency_budget_ms: 300
+  confidence_high: 0.80
+  confidence_medium: 0.60
+  cacheable: true
+  warmup: true
+  allow_fallback: false

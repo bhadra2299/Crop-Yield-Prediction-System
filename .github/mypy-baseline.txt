@@ -1,0 +1,32 @@
+# mypy error-count ratchet baseline for "mypy src/agri".
+#
+# The "types" job in .github/workflows/ci.yml counts diagnostics matching
+# ":[0-9]+: error: " in the --no-error-summary output and fails when the count
+# is GREATER than the integer below. Pre-existing debt is tolerated; NEW type
+# errors are not. 503-style "pass with debt" is only possible because the debt
+# is pinned here and can only go down.
+#
+# Measured: 2026-10-28 with mypy 2.4.0, CPython 3.13, "mypy src/agri --no-error-summary".
+# Total: 69 errors in 12+ files. Largest contributors:
+#   src/agri/common/config.py                17
+#   src/agri/modules/soil_image/training.py  10
+#   src/agri/modules/weather/predict.py       6
+#   src/agri/api/routers/system.py            6
+#   src/agri/modules/irrigation/predict.py    4
+#   src/agri/modules/soil_image/predict.py    4
+#   src/agri/modules/soil_image/model.py      3
+#   src/agri/ingestion/providers.py           3
+#   src/agri/features/__init__.py             3
+#   src/agri/modules/market_price/predict.py  3
+#   src/agri/common/{validation,tabular}.py   4
+#   src/agri/monitoring/drift.py              2
+#   src/agri/modules/market_price/train.py    2
+#
+# The CI job pins mypy==2.4.0 so this count is deterministic. Rules for edits:
+#   * after fixing errors: LOWER the number in the same PR (locks the gain in);
+#   * after a deliberate mypy upgrade that changes the count: re-measure and
+#     update both the pin and this file in one commit, with the reason;
+#   * never raise it to make a red PR green.
+#
+# Exactly one bare integer on a line; every comment above is ignored by the parser.
+69

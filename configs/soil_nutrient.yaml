@@ -1,0 +1,52 @@
+name: soil_nutrient
+version: "1.0.0"
+task: regression
+description: Estimate soil nitrogen from climate and pH. Phosphorus and potassium are deliberately not targeted - see docs/MODULES/soil_nutrient.md.
+owner: data-science
+seed: 42
+
+data:
+  raw: data/raw/crop_recommendation/crop_recommendation.csv
+  target: N
+  features: [temperature, humidity, ph, rainfall]
+  drop: [P, K, label]
+  required_columns: [N, temperature, humidity, ph, rainfall]
+  allow_missing: []
+  max_missing_fraction: 0.0
+  min_rows: 500
+
+split:
+  strategy: random
+  test_size: 0.2
+  shuffle: true
+
+model:
+  family: sklearn
+  algorithm: RandomForest
+  params:
+    n_estimators: 400
+    max_depth: 12
+    n_jobs: -1
+  calibrate: false
+  feature_importance: true
+  uncertainty: conformal
+  target_transform: none
+  class_weight: null
+
+gates:
+  # Climate and pH carry only weak signal about soil chemistry, so the floor is
+  # set at a level the data can actually support. A high R2 here would mean a
+  # leak, not a good model.
+  primary_metric: r2
+  minimum: 0.05
+  secondary_metrics: [rmse, mae]
+  must_beat_baseline: true
+  baseline: median
+
+serving:
+  latency_budget_ms: 200
+  confidence_high: 0.80
+  confidence_medium: 0.60
+  cacheable: true
+  warmup: true
+  allow_fallback: false

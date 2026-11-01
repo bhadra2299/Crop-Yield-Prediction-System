@@ -1,0 +1,81 @@
+# ---------------------------------------------------------------- secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------------------------------------------------------------- python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------- data (large / regenerable)
+# Raw data is DVC-tracked and lives on the remote, not in git.
+data/raw/**
+!data/raw/.gitkeep
+!data/raw/manifest.json
+data/interim/
+data/processed/
+
+# ---------------------------------------------------------------- model artefacts
+models/registry/**
+!models/registry/.gitkeep
+mlruns/
+mlartifacts/
+
+# ---------------------------------------------------------------- reports
+reports/metrics/*.json
+reports/figures/*
+!reports/metrics/.gitkeep
+!reports/figures/.gitkeep
+
+# ---------------------------------------------------------------- node / frontend
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# ---------------------------------------------------------------- os / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# ---------------------------------------------------------------- runtime output
+# Prediction journal and irrigation events are append-only operational data, not source.
+# ---------------------------------------------------------------- runtime output (continued)
+# Local pytest and torch caches that leak into the working tree.
+pytest-of-bhadr/
+torchinductor_bhadr/
+agri_api_*.log
+
+reports/logs/
+reports/events/
+data/external/cache/
+# The disease module caches downloaded weights here; they are large and re-downloadable.
+data/external/model_cache/
+
+# ---------------------------------------------------------------- scratch
+# Underscore-prefixed scripts are local scratch and should not be committed.
+scripts/_*.py
+scripts/_*.ps1
+
+# Belt and braces: the PRD once carried a live API key in plaintext. Even after
+# redaction it should not be committed, and neither should the frontend's env file.
+smart_crop_ai_PRD.md
+intellicrop-ai-farm-main/.env

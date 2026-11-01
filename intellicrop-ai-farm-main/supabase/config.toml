@@ -1,0 +1,16 @@
+project_id = "nplwhyahmghsrzmmecxd"
+
+[functions.get-weather]
+verify_jwt = false
+
+[functions.recommend-crops]
+verify_jwt = false
+
+[functions.analyze-soil]
+verify_jwt = false
+
+[functions.analyze-historical-trends]
+verify_jwt = false
+
+[functions.agri-chat]
+verify_jwt = false
